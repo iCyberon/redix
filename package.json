@@ -1,0 +1,20 @@
+{
+  "name": "redix",
+  "description": "Minimal Node.js framework",
+  "version": "0.1.0",
+  "author": "Vahagn Mkrtchyan <vahagn.mkrtchyan@gmail.com>",
+  "contributors": [],
+  "license": "MIT",
+  "repository": "redixjs/redix",
+  "homepage": "https://redixjs.com",
+  "files": [
+    "LICENSE",
+    "Changes.md",
+    "Readme.md",
+    "index.js",
+    "lib/"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}

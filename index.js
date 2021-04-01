@@ -10,6 +10,7 @@ const Router = require('./lib/router');
 const Options = require('./lib/options');
 
 const { Async, Asyncify, AsyncFunction } = require('./lib/async');
+const { throws } = require('assert');
 
 // Default error handler
 const error = (err, _, res) => {
@@ -26,7 +27,9 @@ class Redix {
 
     this.mwares = [];
     this.ewares = [];
+
     this.routes = {};
+    this.apps = new Map();
 
     for (const method of http.METHODS) {
       this[method.toLowerCase()] = this.add.bind(this, method);
@@ -40,6 +43,17 @@ class Redix {
   }
 
   use(...fn) {
+    if (!fn.length) return this
+
+    const path = (typeof fn[0] === 'string') ? fn.shift() : '/';
+    const app = fn.find(f => f instanceof Redix)
+    if (!!app) {
+      app.use(...(fn.filter(f => !(f instanceof Redix))))
+      this.apps.has(path) && (() => { throw new Error('Already mounted')})
+      this.apps.set(path, app)
+      return this;
+    }
+
     this.mwares = [...this.mwares, ...fn.map(f => Async(f) ? f : Asyncify(f))];
     return this;
   }
@@ -49,7 +63,53 @@ class Redix {
     return this;
   }
 
+  flatten() {
+    for (const [path, app] of this.apps) {
+      let routes = app.flatten();
+      for (const [method, route] of Object.entries(routes)) {
+        const pathSegments = path.split('/');
+        pathSegments.shift()
+        
+        // Static Routes
+        const staticRoutes = Object.entries(route.staticRoutes).reduce((acc, [_, route]) => {
+          let key = path + route.path
+          if (key.length > 1 && key[key.length - 1] === '/')
+            key = key.slice(0, -1);
+
+          route.path = key
+          route.fn = [...app.mwares,...route.fn]
+          route.segments = [...pathSegments, ...route.segments]
+          route.statics = [...pathSegments.map((_, i) => i), ...route.statics.map(segment => segment + pathSegments.length)]
+          route.params = route.params.map(param => param + pathSegments.length)
+          acc[key] = route
+          return acc;
+        },{})
+        this.routes[method].staticRoutes = {...this.routes[method].staticRoutes, ...staticRoutes}
+
+        // Dynamic Routes
+        const dynamicRoutes = Object.entries(route.routes).reduce((acc, [key, routeGroup]) => {
+          routeGroup.map(route => {
+            let pathKey = path + route.path
+            if (pathKey.length > 1 && pathKey[pathKey.length - 1] === '/')
+              pathKey = pathKey.slice(0, -1);
+
+            route.path = key
+            route.fn = [...app.mwares,...route.fn]
+            route.segments = [...pathSegments, ...route.segments]
+            route.statics = [...pathSegments.map((_, i) => i), ...route.statics.map(segment => segment + pathSegments.length)]
+            route.params = route.params.map(param => param + pathSegments.length)
+          })
+          acc[pathSegments.length + parseInt(key)] = routeGroup
+          return acc;
+        },{})
+        this.routes[method].routes = {...this.routes[method].routes, ...dynamicRoutes}
+      }
+    }
+    return this.routes
+  }
+
   listen() {
+    this.flatten()
     this.server = http.createServer(this.handler.bind(this));
 
     return new Promise((resolve, reject) => {
@@ -70,7 +130,11 @@ class Redix {
 
       const handlers = [...this.mwares, ...fn];
       for (let i = 0; i < handlers.length && !err && !res.finished; i++) {
-        err = await handlers[i](req, res);
+        try {
+          err = await handlers[i](req, res);
+        } catch(e) {
+          err = e;
+        }
       }
     } else {
       err = { code: 404 };
@@ -79,7 +143,11 @@ class Redix {
     if (err) {
       const handlers = [...this.ewares, error];
       for (let i = 0; i < handlers.length && !res.finished; i++) {
-        await handlers[i](err, req, res);
+        try {
+          await handlers[i](err, req, res);
+        } catch(e) {
+          error(e, req, res)
+        }
       }
     }
   }
